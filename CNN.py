@@ -178,24 +178,19 @@ def prepare_data_generators(train_labels):
     
     # Convert labels to strings to work with flow_from_dataframe
     train_labels.label = train_labels.label.astype('str')
-    
-    # Define data augmentation parameters for training
-    # Data augmentation is crucial for good performance and prevents overfitting
-    # Using rescale=1./255 here for on-the-fly normalization to speed up training
+      # Apply data augmentation to increase effective training set size
     train_datagen = ImageDataGenerator(
-        validation_split=0.2,  # 20% of data for validation
-        rotation_range=45,     # Randomly rotate images by up to 45 degrees
-        zoom_range=0.2,        # Randomly zoom in/out by up to 20%
-        horizontal_flip=True,  # Randomly flip horizontally
-        vertical_flip=True,    # Randomly flip vertically (plants can be viewed from any angle)
-        fill_mode='nearest',   # Fill mode for pixels outside boundaries
-        shear_range=0.1,       # Shear transformations
-        height_shift_range=0.1,  # Shift vertically
-        width_shift_range=0.1,   # Shift horizontally
-        rescale=1./255,        # Normalize pixel values on-the-fly
+        validation_split=0.2,  # Reserve 20% for validation
+        rotation_range=45,     # Rotate by ±45°
+        zoom_range=0.2,        # Zoom by ±20%
+        horizontal_flip=True,  # Horizontal flips
+        vertical_flip=True,    # Vertical flips
+        fill_mode='nearest',   # Fill strategy
+        shear_range=0.1,       # Shear transform
+        height_shift_range=0.1,  # Vertical shift
+        width_shift_range=0.1,   # Horizontal shift
     )
-    
-    # Create training generator
+      # Create training generator
     train_generator = train_datagen.flow_from_dataframe(
         train_labels,
         directory=os.path.join(WORK_DIR, "train_images"),
@@ -204,13 +199,11 @@ def prepare_data_generators(train_labels):
         y_col="label",         # Column with class labels
         target_size=(TARGET_SIZE, TARGET_SIZE),
         batch_size=BATCH_SIZE,
-        class_mode="sparse"    # Labels are integers
+        class_mode="sparse"  # Integer labels
     )
-      # For validation, we don't want data augmentation, only rescaling
-    validation_datagen = ImageDataGenerator(
-        validation_split=0.2,
-        rescale=1./255  # Apply normalization to validation data too
-    )
+
+    # For validation, we don't want data augmentation, only rescaling
+    validation_datagen = ImageDataGenerator(validation_split=0.2)
     
     # Create validation generator
     validation_generator = validation_datagen.flow_from_dataframe(
@@ -327,45 +320,39 @@ def create_model():
     print("="*50)
     
     try:
-        # Ensure we're using the desired GPU
+        # Get GPU info
         gpu_devices = tf.config.list_physical_devices('GPU')
         if gpu_devices:
             device_details = tf.config.experimental.get_device_details(gpu_devices[0])
             print(f"Using GPU: {device_details.get('device_name', 'Unknown')}")
         
-        # Use a smaller variant if memory issues persist
         print("Loading EfficientNetB0 with memory optimizations...")
         
-        # Create a base model from EfficientNetB0 architecture
-        # Using 'imagenet' weights for transfer learning
-        # Remove the top classification layer (include_top=False)
-        # Since we're using mixed precision training later, we don't need to explicitly convert to float16 here
+        # Create base model with transfer learning
         conv_base = EfficientNetB0(
             include_top=False,  # Remove the classification layer
             weights='imagenet',  # Use pre-trained weights from ImageNet
             input_shape=(TARGET_SIZE, TARGET_SIZE, 3),  # RGB image input shape
             pooling='avg'  # Use global average pooling to reduce parameters
         )
-        
-        # Reduce memory usage by simplifying the model
-        # and avoiding creating large intermediate tensors
+          # Build final model
         x = conv_base.output
         
         # Add dropout for regularization
         x = layers.Dropout(0.2)(x)
         
-        # Add a fully connected layer with 5 outputs and softmax activation
+        # fully connected layer with 5 outputs and softmax activation
         # These correspond to the 5 disease categories
         predictions = layers.Dense(NUM_CLASSES, activation='softmax')(x)
         
-        # Create the model
+        # Create model
         model = models.Model(inputs=conv_base.input, outputs=predictions)
         
-        # Compile the model with appropriate loss function and optimizer
+        # Compile model
         model.compile(
-            optimizer=Adam(learning_rate=0.001),  # Adam optimizer with a moderate learning rate
-            loss='sparse_categorical_crossentropy',  # Appropriate for integer labels
-            metrics=['accuracy']  # Track accuracy during training
+            optimizer=Adam(learning_rate=0.001),
+            loss='sparse_categorical_crossentropy',
+            metrics=['accuracy']
         )
         
         # Print model summary
@@ -434,12 +421,11 @@ def train_model(model, train_generator, validation_generator, steps_per_epoch, v
     print("\n" + "="*50)
     print("MODEL TRAINING")
     print("="*50)
-    
-    # Define callbacks for training
+      # Training callbacks
     callbacks = [
         # Save best model weights based on validation loss
         ModelCheckpoint(
-            './EffNetB0_384_4_best.weights.h5',  # Changed to correct extension format
+            './EffNetB0_384_4_best.weights.h5',
             save_best_only=True,
             save_weights_only=True,
             monitor='val_loss',
@@ -467,61 +453,30 @@ def train_model(model, train_generator, validation_generator, steps_per_epoch, v
             verbose=1
         )
     ]
-      # Memory optimization callback
-    class MemoryOptimizationCallback(tf.keras.callbacks.Callback):
-        def on_epoch_end(self, epoch, logs=None):
-            # Clear memory between epochs
-            import gc
-            gc.collect()
-            tf.keras.backend.clear_session()
-            print("\nMemory cleared after epoch")
     
-    # Add memory optimization to callbacks
-    callbacks.append(MemoryOptimizationCallback())
+    # # Memory optimization callback
+    # class MemoryOptimizationCallback(tf.keras.callbacks.Callback):
+    #     def on_epoch_end(self, epoch, logs=None):
+    #         # Clear memory between epochs
+    #         import gc
+    #         gc.collect()
+    #         tf.keras.backend.clear_session()
+    #         print("\nMemory cleared after epoch")
     
-    # Enable mixed precision training for faster performance on compatible GPUs
-    if tf.config.list_physical_devices('GPU'):
-        print("Enabling mixed precision training...")
-        policy = tf.keras.mixed_precision.Policy('mixed_float16')
-        tf.keras.mixed_precision.set_global_policy(policy)
-        print(f"Compute dtype: {policy.compute_dtype}")
-        print(f"Variable dtype: {policy.variable_dtype}")
-        
-    # Use TensorFlow's XLA compiler for additional performance improvements
-    tf.config.optimizer.set_jit(True)  # Enable XLA
-    print("XLA JIT compilation enabled")
-    
-    # Convert data generators to tf.data.Dataset for better performance
-    def convert_to_tfdata(generator, batch_size, steps):
-        """Convert ImageDataGenerator to tf.data.Dataset for better performance"""
-        def gen_fn():
-            for _ in range(steps):
-                x, y = next(generator)
-                yield x, y
-                
-        dataset = tf.data.Dataset.from_generator(
-            gen_fn,
-            output_types=(tf.float32, tf.int32),
-            output_shapes=((None, TARGET_SIZE, TARGET_SIZE, 3), (None,))
-        )
-        # Apply performance optimizations
-        dataset = dataset.prefetch(tf.data.AUTOTUNE)
-        return dataset
-    
-    # Convert generators to optimized tf.data.Dataset objects
-    print("Converting data generators to tf.data.Dataset for better performance...")
-    train_dataset = convert_to_tfdata(train_generator, BATCH_SIZE, steps_per_epoch)
-    validation_dataset = convert_to_tfdata(validation_generator, BATCH_SIZE, validation_steps)
+    # # Add memory optimization to callbacks
+    # callbacks.append(MemoryOptimizationCallback())
     
     # Start timer for training
     start_time = datetime.datetime.now()
     print(f"Training started at: {start_time}")
     
-    # Train with optimized datasets instead of generators
+    # Train the model
     history = model.fit(
-        train_dataset,
+        train_generator,
+        steps_per_epoch=steps_per_epoch,
         epochs=EPOCHS,
-        validation_data=validation_dataset,
+        validation_data=validation_generator,
+        validation_steps=validation_steps,
         callbacks=callbacks
     )
     
@@ -625,7 +580,7 @@ def all_activations_vis(model, img_tensor, layers=10):
     layers : int
         Number of layers to visualize
     """
-    # Get outputs of first few layers
+    # Get layer outputs
     layer_outputs = [layer.output for layer in model.layers[:layers]]
     activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
     activations = activation_model.predict(img_tensor)
@@ -633,26 +588,24 @@ def all_activations_vis(model, img_tensor, layers=10):
     # Get layer names
     layer_names = []
     for layer in model.layers[:layers]: 
-        layer_names.append(layer.name) 
+        layer_names.append(layer.name)
 
-    # For each layer, display a grid of activation channels
+    # Visualize each layer
     images_per_row = 3
     for layer_name, layer_activation in zip(layer_names, activations): 
-        # Number of features in the feature map
+        # Get feature dimensions
         n_features = layer_activation.shape[-1] 
-        
-        # Feature map has shape (1, size, size, n_features)
         size = layer_activation.shape[1]
 
-        # Tiles the activation channels in this matrix
+        # Create display grid
         n_cols = n_features // images_per_row 
         display_grid = np.zeros((size * n_cols, images_per_row * size)) 
 
-        # Fill the display grid
+        # Fill grid with processed channel images
         for col in range(n_cols): 
             for row in range(images_per_row): 
                 channel_image = layer_activation[0, :, :, col * images_per_row + row] 
-                # Post-process the feature to make it visually palatable
+                # Normalize for visualization
                 channel_image -= channel_image.mean() 
                 channel_image /= channel_image.std() 
                 channel_image *= 64 
@@ -726,35 +679,29 @@ def main():
     
     # Step 3: Prepare data generators
     train_generator, validation_generator, steps_per_epoch, validation_steps = prepare_data_generators(train_labels)
-    
-    # Step 4: Create and compile the model
+      # Create and train model
     model = create_model()
-    
-    # Step 5: Train the model
     history = train_model(model, train_generator, validation_generator, steps_per_epoch, validation_steps)
     
-    # Step 6: Visualize activations
-    # Choose a sample image for visualization
+    # Visualize layer activations
     random_idx = np.random.randint(0, len(train_labels))
     img_path = os.path.join(WORK_DIR, "train_images", train_labels.image_id[random_idx])
     img = image.load_img(img_path, target_size=(TARGET_SIZE, TARGET_SIZE))
     img_tensor = image.img_to_array(img)
     img_tensor = np.expand_dims(img_tensor, axis=0)
     
-    # Visualize activations of the first layer
     activation_layer_vis(model, img_tensor, activation_layer=0)
-    
-    # Visualize all activations for first few layers
     all_activations_vis(model, img_tensor, layers=5)
     
-    # Step 7: Make predictions on test data
+    # Generate predictions
     make_predictions(model)
     
     print("\n" + "="*50)
     print("CASSAVA LEAF DISEASE CLASSIFICATION COMPLETE")
     print("="*50)
 
-if __name__ == "__main__":    # Check for GPU availability and configure for performance
+if __name__ == "__main__":
+    # Check for GPU availability
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         print(f"GPU(s) detected: {len(gpus)}")
@@ -764,22 +711,10 @@ if __name__ == "__main__":    # Check for GPU availability and configure for per
             # Set memory growth to avoid consuming all memory
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            
-            # Set TensorFlow to use the GPU memory more efficiently
-            tf.config.optimizer.set_jit(True)  # Enable XLA JIT compilation globally
-            
-            # Set environment variable for cudNN autotune
-            os.environ['TF_CUDNN_USE_AUTOTUNE'] = '1'
-            
-            # Use Nccl for multi-GPU if available (will be ignored for single GPU)
-            os.environ['TF_COLLECTIVE_OPERATIONS_LIBRARY'] = 'NCCL'
         except RuntimeError as e:
             print(e)
     else:
         print("No GPU detected, using CPU")
-        # Set TensorFlow to use all available CPU cores
-        os.environ['TF_NUM_INTEROP_THREADS'] = str(os.cpu_count())
-        os.environ['TF_NUM_INTRAOP_THREADS'] = str(os.cpu_count())
     
     # Run the main function
     main()
