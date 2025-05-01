@@ -1,0 +1,37 @@
+# Environment variables
+.env
+.env.*
+
+# Weights & Biases
+wandb/
+*.wandb
+
+# Model files
+*.h5
+model-wandb-artifact/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Output files
+*.png
+*.csv
+model_performance_summary.txt
+
+./cassava-leaf-disease-classification.zip
+./.idea
